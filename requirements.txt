@@ -1,0 +1,7 @@
+aiogram>=3.0,<4.0
+aiohttp>=3.9,<3.10
+python-dotenv>=1.0,<2.0
+pytest>=8.0,<9.0
+pytest-asyncio>=0.23,<1.0
+pytest-aiogram>=0.1,<1.0
+aioresponses==0.7.9
