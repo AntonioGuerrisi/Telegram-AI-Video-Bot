@@ -8,6 +8,7 @@ An async Telegram bot that generates videos from text prompts and images using t
 - Image-to-video generation using a user-provided first frame
 - Approval and editing flow for enhanced prompts
 - Russian-language user interface
+- English-language user interface (selected from the Telegram language)
 - File-based logging per user
 - Dockerized deployment
 
@@ -18,6 +19,7 @@ An async Telegram bot that generates videos from text prompts and images using t
 - `bot/openrouter_client.py` — OpenRouter video generation client with polling
 - `bot/prompt_engineer.py` — prompt enhancement via Qwen
 - `bot/translation_client.py` — translates the final prompt to Russian
+- `bot/localization.py` — English and Russian user-facing messages
 - `bot/config.py` — environment-based configuration
 - `bot/logger.py` — application and per-user loggers
 
@@ -54,6 +56,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+On Windows PowerShell, use Python 3.11 or 3.12 and activate the environment with:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+The bot uses Russian only when Telegram reports `ru` or `ru-*` as the user's language. English is the fallback for English, missing, and all other language codes.
 
 Run the bot:
 
@@ -97,6 +109,7 @@ docker compose down
 │   ├── handlers.py
 │   ├── keyboards.py
 │   ├── logger.py
+│   ├── localization.py
 │   ├── main.py
 │   ├── openrouter_client.py
 │   ├── prompt_engineer.py

@@ -10,6 +10,7 @@ from aiogram.filters import Command
 from bot.config import Settings
 from bot.keyboards import approve_prompt_keyboard, edit_mode_keyboard, new_video_keyboard
 from bot.logger import get_user_logger, setup_app_logger
+from bot.localization import get_locale
 from bot.openrouter_client import OpenRouterClient, VideoGenerationError
 from bot.prompt_engineer import PromptEngineerClient
 from bot.prompts import PROMPT_ENGINEER_SYSTEM_PROMPT
@@ -31,13 +32,8 @@ def register_handlers(dp: Dispatcher, settings: Settings | None = None):
 @router.message(Command("start"))
 async def start_command(message: types.Message):
     _reset_user_state(message.from_user.id)
-    text = (
-        "Привет! Я бот для генерации видео.\n\n"
-        "Просто отправь мне текстовый запрос — и я подготовлю идеальный промпт и создам короткое видео.\n"
-        "Или загрузи изображение с подписью, и я сделаю видео на его основе.\n\n"
-        "Пример:\nкот танцует под дождем"
-    )
-    await message.answer(text)
+    _, messages = get_locale(getattr(message.from_user, "language_code", None))
+    await message.answer(messages.start.format(example=messages.example))
 
 
 @router.message(lambda msg: msg.text and not msg.text.startswith("/"))
@@ -75,18 +71,20 @@ async def document_image_prompt_handler(message: types.Message):
 @router.callback_query(F.data == "generate_video")
 async def generate_video_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    language_code = getattr(callback.from_user, "language_code", None)
+    _, messages = get_locale(language_code)
     pending = PENDING_APPROVALS.pop(user_id, None)
     _reset_user_state(user_id)
 
     if not pending:
-        await callback.answer("Сессия устарела. Начните заново.", show_alert=True)
+        await callback.answer(messages.stale_session, show_alert=True)
         return
 
-    await callback.answer("Начинаю генерацию видео...")
+    await callback.answer(messages.generate_started)
     await callback.message.edit_reply_markup(reply_markup=None)
 
     progress_msg = await callback.message.answer(
-        "Генерирую видео по согласованному промпту... Это может занять несколько минут."
+        messages.generating_approved
     )
 
     task = asyncio.create_task(
@@ -95,6 +93,7 @@ async def generate_video_callback(callback: types.CallbackQuery):
             progress_msg=progress_msg,
             prompt=pending["enhanced_prompt"],
             image_data=pending.get("image_data"),
+            language_code=language_code,
         )
     )
     GENERATION_TASKS[(user_id, progress_msg.message_id)] = task
@@ -103,24 +102,25 @@ async def generate_video_callback(callback: types.CallbackQuery):
 @router.callback_query(F.data == "edit_prompt")
 async def edit_prompt_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    _, messages = get_locale(getattr(callback.from_user, "language_code", None))
     pending = PENDING_APPROVALS.get(user_id)
     if not pending:
-        await callback.answer("Сессия устарела. Начните заново.", show_alert=True)
+        await callback.answer(messages.stale_session, show_alert=True)
         return
 
     CLARIFICATION_MODE.discard(user_id)
     EDIT_MODE.add(user_id)
-    await callback.answer("Режим редактирования")
+    await callback.answer(messages.edit_mode)
     edit_msg = await callback.message.answer(
-        "Напишите, что нужно изменить в промпте:",
-        reply_markup=edit_mode_keyboard(),
+        messages.edit_prompt,
+        reply_markup=edit_mode_keyboard(getattr(callback.from_user, "language_code", None)),
     )
     try:
         await callback.message.delete()
     except Exception:
         pass
     await callback.message.answer(
-        "Жду ваши правки...",
+        messages.waiting_edits,
         reply_to_message_id=edit_msg.message_id,
     )
 
@@ -128,30 +128,31 @@ async def edit_prompt_callback(callback: types.CallbackQuery):
 @router.callback_query(F.data == "new_video")
 async def new_video_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    _, messages = get_locale(getattr(callback.from_user, "language_code", None))
     _reset_user_state(user_id)
-    await callback.answer("Новая генерация")
+    await callback.answer(messages.new_generation)
     try:
         await callback.message.delete()
     except Exception:
         pass
     await callback.message.answer(
-        "Вы можете создать ещё видео. Введите текстовый запрос для генерации видео.\n\n"
-        "Пример:\nкот танцует под дождем"
+        messages.new_video.format(example=messages.example)
     )
 
 
 @router.callback_query(F.data == "cancel_edit")
 async def cancel_edit_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
+    _, messages = get_locale(getattr(callback.from_user, "language_code", None))
     EDIT_MODE.discard(user_id)
-    await callback.answer("Редактирование отменено")
+    await callback.answer(messages.cancel_edit)
     await callback.message.edit_reply_markup(reply_markup=None)
     pending = PENDING_APPROVALS.get(user_id)
     if pending and pending.get("enhanced_prompt"):
         await callback.message.answer(
-            "Идеальный промпт:\n"
+            f"{messages.perfect_prompt}\n"
             f"```text\n{pending['enhanced_prompt']}\n```",
-            reply_markup=approve_prompt_keyboard(),
+            reply_markup=approve_prompt_keyboard(getattr(callback.from_user, "language_code", None)),
             parse_mode="Markdown",
         )
 
@@ -163,13 +164,14 @@ async def _process_new_request(
 ):
     user = message.from_user
     user_id = user.id
+    _, messages = get_locale(getattr(user, "language_code", None))
 
     if not prompt:
-        await message.answer("Пожалуйста, напишите описание видео.")
+        await message.answer(messages.empty_prompt)
         return
 
     if len(prompt) > 1000:
-        await message.answer("Описание слишком длинное. Максимум 1000 символов.")
+        await message.answer(messages.prompt_too_long)
         return
 
     if image_data:
@@ -181,7 +183,7 @@ async def _process_new_request(
         )
         return
 
-    progress_msg = await message.answer("Думаю над идеальным промптом...")
+    progress_msg = await message.answer(messages.thinking)
     await _enhance_prompt(
         user_id=user_id,
         username=user.username,
@@ -190,6 +192,7 @@ async def _process_new_request(
         user_request=prompt,
         chat_history=None,
         image_data=None,
+        language_code=getattr(user, "language_code", None),
     )
 
 
@@ -200,6 +203,8 @@ async def _process_image_request(
     image_data: bytes,
 ):
     user_id = user.id
+    language_code = getattr(user, "language_code", None)
+    _, messages = get_locale(language_code)
     user_logger = get_user_logger(user_id)
     app_logger.info("User %s (%s) requested image-to-video: %s", user_id, user.username, prompt)
     user_logger.info("Image-to-video request: %s", prompt)
@@ -210,7 +215,7 @@ async def _process_image_request(
     bot = user.bot
     progress_msg = await bot.send_message(
         chat_id,
-        "Генерирую видео по вашей картинке... Это может занять несколько минут.",
+        messages.image_generating,
     )
 
     task = asyncio.create_task(
@@ -219,6 +224,7 @@ async def _process_image_request(
             progress_msg=progress_msg,
             prompt=prompt,
             image_data=image_data,
+            language_code=language_code,
         )
     )
     GENERATION_TASKS[(user_id, progress_msg.message_id)] = task
@@ -230,14 +236,16 @@ async def _process_clarification_answer(
 ):
     user = message.from_user
     user_id = user.id
+    language_code = getattr(user, "language_code", None)
+    _, messages = get_locale(language_code)
     pending = PENDING_APPROVALS.get(user_id)
 
     if not pending:
         CLARIFICATION_MODE.discard(user_id)
-        await message.answer("Сессия устарела. Начните заново.")
+        await message.answer(messages.stale_session)
         return
 
-    progress_msg = await message.answer("Думаю над идеальным промптом...")
+    progress_msg = await message.answer(messages.thinking)
     chat_history = pending["chat_history"]
     chat_history.append({"role": "user", "content": prompt})
 
@@ -249,6 +257,7 @@ async def _process_clarification_answer(
         user_request=prompt,
         chat_history=chat_history[:-1],
         image_data=pending.get("image_data"),
+        language_code=language_code,
     )
 
 
@@ -258,14 +267,16 @@ async def _process_edit_request(
 ):
     user = message.from_user
     user_id = user.id
+    language_code = getattr(user, "language_code", None)
+    _, messages = get_locale(language_code)
     pending = PENDING_APPROVALS.get(user_id)
 
     if not pending:
         EDIT_MODE.discard(user_id)
-        await message.answer("Сессия устарела. Начните заново.")
+        await message.answer(messages.stale_session)
         return
 
-    progress_msg = await message.answer("Думаю над идеальным промптом...")
+    progress_msg = await message.answer(messages.thinking)
     chat_history = pending["chat_history"]
     edit_message = f"Измени промпт: {prompt}"
     chat_history.append({"role": "user", "content": edit_message})
@@ -278,6 +289,7 @@ async def _process_edit_request(
         user_request=edit_message,
         chat_history=chat_history[:-1],
         image_data=pending.get("image_data"),
+        language_code=language_code,
     )
 
 
@@ -289,7 +301,9 @@ async def _enhance_prompt(
     user_request: str,
     chat_history: Optional[list[dict]],
     image_data: Optional[bytes] = None,
+    language_code: str | None = None,
 ):
+    locale, messages = get_locale(language_code)
     user_logger = get_user_logger(user_id)
     app_logger.info("User %s (%s) requested prompt engineering: %s", user_id, username, user_request)
     user_logger.info("Prompt engineering request: %s", user_request)
@@ -318,11 +332,12 @@ async def _enhance_prompt(
                 "chat_history": current_history,
                 "image_data": image_data,
                 "enhanced_prompt": "",
+                "language_code": language_code,
             }
             await progress_msg.delete()
             await progress_msg.bot.send_message(
                 chat_id=chat_id,
-                text=f"Уточнение:\n\n{enhanced}\n\nНапишите ответ в чат.",
+                text=messages.clarification.format(content=enhanced),
             )
             return
 
@@ -335,25 +350,30 @@ async def _enhance_prompt(
         settings = _get_settings()
         translator = TranslationClient(settings.openrouter_prompt_key)
         try:
-            russian_translation = await translator.translate_to_russian(enhanced_prompt)
+            translation = (
+                await translator.translate_to_russian(enhanced_prompt)
+                if locale == "ru"
+                else enhanced_prompt
+            )
         except Exception:
             app_logger.exception("Translation failed for user %s", user_id)
-            russian_translation = "(Не удалось получить перевод)"
+            translation = messages.translation_failed
 
         PENDING_APPROVALS[user_id] = {
             "chat_history": current_history,
             "image_data": image_data,
             "enhanced_prompt": enhanced_prompt,
+            "language_code": language_code,
         }
 
         await progress_msg.delete()
         await progress_msg.bot.send_message(
             chat_id=chat_id,
             text=(
-                f"Идеальный промпт:\n```text\n{enhanced_prompt}\n```\n\n"
-                f"Перевод на русский:\n{russian_translation}"
+                f"{messages.perfect_prompt}\n```text\n{enhanced_prompt}\n```\n\n"
+                f"{messages.russian_translation if locale == 'ru' else messages.prompt_language}:\n{translation}"
             ),
-            reply_markup=approve_prompt_keyboard(),
+            reply_markup=approve_prompt_keyboard(language_code),
             parse_mode="Markdown",
         )
 
@@ -361,7 +381,7 @@ async def _enhance_prompt(
         app_logger.exception("Error enhancing prompt for user %s", user_id)
         user_logger.error("Error: %s", exc)
         await progress_msg.edit_text(
-            "Произошла ошибка при обработке запроса. Попробуйте позже или измените описание."
+            messages.enhancement_error
         )
 
 
@@ -384,8 +404,10 @@ async def _generate_and_send(
     progress_msg: types.Message,
     prompt: str,
     image_data: Optional[bytes] = None,
+    language_code: str | None = None,
 ):
     user_id = progress_msg.from_user.id if progress_msg.from_user else chat_id
+    _, messages = get_locale(language_code or getattr(progress_msg.from_user, "language_code", None))
     user_logger = get_user_logger(user_id)
 
     try:
@@ -401,7 +423,7 @@ async def _generate_and_send(
             await progress_msg.bot.send_video(
                 chat_id=chat_id,
                 video=types.FSInputFile(video_path),
-                caption="Ваше видео готово!",
+                caption=messages.video_ready,
             )
 
             await progress_msg.delete()
@@ -409,9 +431,8 @@ async def _generate_and_send(
 
             await progress_msg.bot.send_message(
                 chat_id=chat_id,
-                text="Вы можете создать ещё видео, если желаете. Введите текстовый запрос для генерации видео.\n\n"
-                     "Пример:\nкот танцует под дождем",
-                reply_markup=new_video_keyboard(),
+                 text=messages.new_video.format(example=messages.example),
+                 reply_markup=new_video_keyboard(language_code),
             )
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -419,19 +440,15 @@ async def _generate_and_send(
         app_logger.exception("Video generation error for user %s", user_id)
         user_logger.error("Error: %s", exc)
         if exc.is_ip_infringement:
-            error_text = (
-                "Не удалось сгенерировать видео: запрос может нарушать права на интеллектуальную собственность "
-                "(упоминание реальных людей, персонажей или брендов). Попробуйте изменить промпт, "
-                "используя вымышленных персонажей или общие описания."
-            )
+            error_text = messages.ip_error
         else:
-            error_text = "Произошла ошибка при генерации видео. Попробуйте позже или измените запрос."
+            error_text = messages.generation_error
         await progress_msg.edit_text(error_text)
     except Exception as exc:
         app_logger.exception("Error generating video for user %s", user_id)
         user_logger.error("Error: %s", exc)
         await progress_msg.edit_text(
-            "Произошла ошибка при генерации видео. Попробуйте позже или измените запрос."
+            messages.generation_error
         )
     finally:
         GENERATION_TASKS.pop((user_id, progress_msg.message_id), None)
